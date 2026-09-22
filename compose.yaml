@@ -1,0 +1,178 @@
+# =============================================================================
+# PLC Testbench Platform - production stack
+# =============================================================================
+#
+# Self-contained deployment for the released images:
+#
+#   reverse-proxy (nginx, public) --> frontend (static SPA)
+#                                 \-> backend  (FastAPI + WebSocket)
+#                                       backend  --> mongo   (persistence)
+#                                       backend  --> redis   (job broker)
+#                                       workers  --> redis   (dramatiq)
+#
+# Usage:
+#   cp .env.example .env      # then edit the secrets
+#   docker compose up -d
+#
+# See README.md for every option.
+# =============================================================================
+name: open-plc-studio
+
+# -----------------------------------------------------------------------------
+# Environment shared by the API and the worker containers. Both roles run the
+# exact same backend image; only SERVICE_ROLE / the command differ.
+# -----------------------------------------------------------------------------
+x-backend-environment: &backend-environment
+  MONGO_INITDB_ROOT_USERNAME: >-
+    ${MONGO_INITDB_ROOT_USERNAME:?Set MONGO_INITDB_ROOT_USERNAME in .env}
+  MONGO_INITDB_ROOT_PASSWORD: >-
+    ${MONGO_INITDB_ROOT_PASSWORD:?Set MONGO_INITDB_ROOT_PASSWORD in .env}
+  MONGO_HOST: mongo
+  MONGO_PORT: "27017"
+  MONGO_DATABASE: ${MONGO_DATABASE:-plc-testbench}
+  REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+  PLC_ROOT_FOLDER: ${PLC_ROOT_FOLDER:-./artifacts-storage}
+  PLUGINS_DIRECTORY: ${PLUGINS_DIRECTORY:-./user-plugins}
+
+# -----------------------------------------------------------------------------
+# Common backend service definition (API + worker).
+# -----------------------------------------------------------------------------
+x-backend-common: &backend-common
+  # The released backend image is currently linux/amd64-only. On Apple Silicon,
+  # Docker Desktop runs it through emulation; override APP_PLATFORM in .env
+  # when a native multi-architecture release becomes available.
+  platform: ${APP_PLATFORM:-linux/amd64}
+  image: >-
+    cimil/openplc-studio-backend:${BACKEND_IMAGE_TAG}
+  restart: unless-stopped
+  volumes:
+    # Durable run artifacts (wav files, exports, masks...).
+    - artifacts-storage:/app/backend/artifacts-storage
+    # User PLC algorithms, editable on the host without rebuilding images.
+    - ./plugins:/app/backend/user-plugins
+  networks:
+    - openplc-studio-network
+  depends_on:
+    mongo:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
+services:
+  # ---------------------------------------------------------------------------
+  # Public entrypoint: terminates HTTP and routes /api, /ws and / to the
+  # frontend and backend containers.
+  # ---------------------------------------------------------------------------
+  reverse-proxy:
+    image: nginx:1.27.3-alpine
+    container_name: openplc-studio-rp
+    restart: unless-stopped
+    ports:
+      - "${HTTP_PORT:-80}:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      frontend:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    networks:
+      - openplc-studio-network
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # Compiled Angular SPA served by unprivileged nginx (internal only).
+  # ---------------------------------------------------------------------------
+  frontend:
+    platform: ${APP_PLATFORM:-linux/amd64}
+    image: >-
+      cimil/openplc-studio-frontend:${FRONTEND_IMAGE_TAG}
+    container_name: openplc-studio-frontend
+    restart: unless-stopped
+    networks:
+      - openplc-studio-network
+
+  # ---------------------------------------------------------------------------
+  # FastAPI HTTP + WebSocket API.
+  # ---------------------------------------------------------------------------
+  backend:
+    <<: *backend-common
+    container_name: openplc-studio-backend
+    command: ["api"]
+    environment:
+      <<: *backend-environment
+      SERVICE_ROLE: api
+
+  # ---------------------------------------------------------------------------
+  # dramatiq worker consuming the Redis broker (same image as the API).
+  # ---------------------------------------------------------------------------
+  workers:
+    <<: *backend-common
+    container_name: openplc-studio-backend-workers
+    command: ["worker"]
+    environment:
+      <<: *backend-environment
+      SERVICE_ROLE: worker
+
+  # ---------------------------------------------------------------------------
+  # Redis: dramatiq broker. Persisted so queued jobs survive restarts.
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:8.2.1-alpine
+    container_name: openplc-studio-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--loglevel", "warning"]
+    volumes:
+      - redis-data:/data
+    networks:
+      - openplc-studio-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # MongoDB: run metadata and results.
+  # ---------------------------------------------------------------------------
+  mongo:
+    # Do not force amd64 here: MongoDB requires AVX, which is unavailable to
+    # its amd64 image under Apple Silicon emulation. Docker selects arm64.
+    image: mongo:6.0.8
+    container_name: openplc-studio-mongo
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: >-
+        ${MONGO_INITDB_ROOT_USERNAME:?Set MONGO_INITDB_ROOT_USERNAME in .env}
+      MONGO_INITDB_ROOT_PASSWORD: >-
+        ${MONGO_INITDB_ROOT_PASSWORD:?Set MONGO_INITDB_ROOT_PASSWORD in .env}
+    volumes:
+      - mongo-data:/data/db
+    networks:
+      - openplc-studio-network
+    healthcheck:
+      test:
+        - CMD
+        - mongosh
+        - --quiet
+        - --eval
+        - "db.adminCommand('ping').ok"
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+networks:
+  openplc-studio-network:
+    driver: bridge
+    external: false
+
+volumes:
+  mongo-data:
+  redis-data:
+  artifacts-storage:

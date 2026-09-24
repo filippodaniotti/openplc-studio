@@ -1,12 +1,11 @@
-<img src="assets/high-res-banner.png" alt="OpenPLC Studio logo">
+<img src="assets/banner.png" alt="OpenPLC Studio logo">
 
 # OpenPLC Studio - Streamlined PLC Algorithm development
 
-Self-contained Docker Compose stack for the released OpenPLC Studio application.
-It wires together the published **frontend** and **backend** images with the
-supporting infrastructure (MongoDB, Redis, reverse proxy).
+OpenPLC Studio is an integrated application to make the hard life of engineers and scientists working on PLC a little bit easier. It delivers the [PLC Testbench](https://github.com/CIMIL/plc-testbench) Python package as a convenient, easy-to-navigate and no-nonsense web application stack.
 
-![OpenPLC Studio architecture](assets/architecture.png)
+This repo contains a self-contained Docker Compose stack to spin up the application.
+It wires together the published [frontend](https://github.com/CIMIL/openplc-studio-frontend) and [backend](https://github.com/CIMIL/openplc-studio-backend) images with the supporting infrastructure (MongoDB, Redis, reverse proxy).
 
 ## Requirements
 
@@ -79,6 +78,10 @@ cimil/plc-platform-frontend:<FRONTEND_IMAGE_TAG>
 For a repeatable deployment, pin `BACKEND_IMAGE_TAG` and
 `FRONTEND_IMAGE_TAG` to the `sha-*` tag produced by each repository's workflow.
 For the simplest installation, keep both tags set to `latest`.
+
+## System architecture
+
+![OpenPLC Studio architecture](assets/architecture.png)
 
 ## Configuration reference
 
